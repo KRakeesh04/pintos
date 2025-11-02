@@ -38,6 +38,11 @@
 #include "filesys/fsutil.h"
 #endif
 
+#define MAX_LINE_LENGTH 255
+#define MAX_TOKENS 50
+#define NAME "KR Kanes Rakeshan"
+#define INDEX_NO "230518C"
+
 /* Page directory with kernel mappings only. */
 uint32_t *init_page_dir;
 
@@ -63,6 +68,7 @@ static void paging_init (void);
 static char **read_command_line (void);
 static char **parse_options (char **argv);
 static void run_actions (char **argv);
+static void interative_shell (char **argv);
 static void usage (void);
 
 #ifdef FILESYS
@@ -70,7 +76,20 @@ static void locate_block_devices (void);
 static void locate_block_device (enum block_type, const char *name);
 #endif
 
+static int split_line(char *line, char *tokens[]);
+static void whoami_command(char **argv);
+static void shutdown_command(char **argv);
+static void time_command(char **argv);
+static void ram_command(char **argv);
+static void thread_command(char **argv);
+static void priority_command(char **argv);
+static void exit_command(char **argv);
+
+
 int pintos_init (void) NO_RETURN;
+
+
+
 
 /* Pintos main entry point. */
 int
@@ -78,7 +97,7 @@ pintos_init (void)
 {
   char **argv;
 
-  /* Clear BSS. */  
+  /* Clear BSS. */
   bss_init ();
 
   /* Break command line into arguments and parse options. */
@@ -88,7 +107,7 @@ pintos_init (void)
   /* Initialize ourselves as a thread so we can use locks,
      then enable console locking. */
   thread_init ();
-  console_init ();  
+  console_init ();
 
   /* Greet user. */
   printf ("Pintos booting with %'"PRIu32" kB RAM...\n",
@@ -128,15 +147,18 @@ pintos_init (void)
 #endif
 
   printf ("Boot complete.\n");
-  
+
   if (*argv != NULL) {
     /* Run actions specified on kernel command line. */
     run_actions (argv);
   } else {
-    // TODO: no command line passed to kernel. Run interactively 
+    // TODO: no command line passed to kernel. Run interactively
+    interative_shell (argv);
+
   }
 
   /* Finish up. */
+  shutdown_configure(SHUTDOWN_POWER_OFF);
   shutdown ();
   thread_exit ();
 }
@@ -148,7 +170,7 @@ pintos_init (void)
    The start and end of the BSS segment is recorded by the
    linker as _start_bss and _end_bss.  See kernel.lds. */
 static void
-bss_init (void) 
+bss_init (void)
 {
   extern char _start_bss, _end_bss;
   memset (&_start_bss, 0, &_end_bss - &_start_bss);
@@ -195,7 +217,7 @@ paging_init (void)
 /* Breaks the kernel command line into words and returns them as
    an argv-like array. */
 static char **
-read_command_line (void) 
+read_command_line (void)
 {
   static char *argv[LOADER_ARGS_LEN / 2 + 1];
   char *p, *end;
@@ -205,7 +227,7 @@ read_command_line (void)
   argc = *(uint32_t *) ptov (LOADER_ARG_CNT);
   p = ptov (LOADER_ARGS);
   end = p + LOADER_ARGS_LEN;
-  for (i = 0; i < argc; i++) 
+  for (i = 0; i < argc; i++)
     {
       if (p >= end)
         PANIC ("command line arguments overflow");
@@ -230,14 +252,14 @@ read_command_line (void)
 /* Parses options in ARGV[]
    and returns the first non-option argument. */
 static char **
-parse_options (char **argv) 
+parse_options (char **argv)
 {
   for (; *argv != NULL && **argv == '-'; argv++)
     {
       char *save_ptr;
       char *name = strtok_r (*argv, "=", &save_ptr);
       char *value = strtok_r (NULL, "", &save_ptr);
-      
+
       if (!strcmp (name, "-h"))
         usage ();
       else if (!strcmp (name, "-q"))
@@ -277,7 +299,7 @@ parse_options (char **argv)
      for reproducibility.  To fix this, give the "-r" option to
      the pintos script to request real-time execution. */
   random_init (rtc_get_time ());
-  
+
   return argv;
 }
 
@@ -286,7 +308,7 @@ static void
 run_task (char **argv)
 {
   const char *task = argv[1];
-  
+
   printf ("Executing '%s':\n", task);
 #ifdef USERPROG
   process_wait (process_execute (task));
@@ -299,10 +321,10 @@ run_task (char **argv)
 /* Executes all of the actions specified in ARGV[]
    up to the null pointer sentinel. */
 static void
-run_actions (char **argv) 
+run_actions (char **argv)
 {
   /* An action. */
-  struct action 
+  struct action
     {
       char *name;                       /* Action name. */
       int argc;                         /* # of args, including action name. */
@@ -310,9 +332,16 @@ run_actions (char **argv)
     };
 
   /* Table of supported actions. */
-  static const struct action actions[] = 
+  static const struct action actions[] =
     {
       {"run", 2, run_task},
+      {"whoami", 1, whoami_command},
+      {"shutdown", 1, shutdown_command},
+      {"time", 1, time_command},
+      {"ram", 1, ram_command},
+      {"thread", 1, thread_command},
+      {"priority", 1, priority_command},
+      {"exit", 1, exit_command},
 #ifdef FILESYS
       {"ls", 1, fsutil_ls},
       {"cat", 2, fsutil_cat},
@@ -344,8 +373,107 @@ run_actions (char **argv)
       a->function (argv);
       argv += a->argc;
     }
-  
+
 }
+
+// to run the interative shell
+static void
+interative_shell (char **argv)
+{
+    input_init();
+    while (true) {
+        printf("k-rakeshan> ");
+        char line_buffer[MAX_LINE_LENGTH];
+        int line_index = 0;
+        while (true) {
+            uint8_t key = input_getc();
+            if (key == '\n' || key == '\r') {
+                line_buffer[line_index] = '\0';
+                // TODO: process the input line in line_buffer, e.g. run a command
+                printf("\nYou entered: %s\n", line_buffer);
+                break;
+
+            } else if (key == '\b' || key == 127) {
+                if (line_index > 0) {
+                line_index--;
+                printf("\b \b"); // Erase character on screen
+                }
+            } else if (line_index < MAX_LINE_LENGTH - 1) {
+                // Add character to buffer and echo it
+                line_buffer[line_index++] = key;
+                printf("%c", key);
+            }
+        }
+        char *tokens[MAX_TOKENS];
+        int n = split_line(line_buffer, tokens);
+        char *arr[n];
+        for (int i=0; i<n; i++) {
+            arr[i] = tokens[i];
+        // printf("%s-\n",tokens[i]);
+        }
+
+        run_actions(arr);
+    }
+}
+
+static int
+split_line(char *line, char *tokens[])
+{
+    char *save_ptr;
+    int count = 0;
+
+    char *token = strtok_r(line, " ", &save_ptr);
+    while (token != NULL && count < MAX_TOKENS) {
+        tokens[count++] = token;
+        token = strtok_r(NULL, " ", &save_ptr);
+    }
+
+    return count;
+}
+
+static void
+whoami_command(char **argv)
+{
+    printf("%s - %s\n", NAME, INDEX_NO);
+}
+
+static void
+shutdown_command(char **argv)
+{
+
+}
+
+static void
+time_command(char **argv)
+{
+
+}
+
+static void
+ram_command(char **argv)
+{
+
+}
+
+static void
+thread_command(char **argv)
+{
+
+}
+
+static void
+priority_command(char **argv)
+{
+
+}
+
+static void
+exit_command(char **argv)
+{
+
+}
+
+
 
 /* Prints a kernel command line help message and powers off the
    machine. */
