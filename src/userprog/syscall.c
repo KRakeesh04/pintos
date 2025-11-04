@@ -88,6 +88,26 @@ check_user_ptr(const void *ptr)
   }
 }
 
+/* Checks if a user string is valid. */
+static void
+check_user_string(const char *str)
+{
+  if (str == NULL)
+    exit_process(-1);
+
+  /* Validate each byte of the string until null terminator. */
+  const char *ptr = str;
+  while (true)
+  {
+    int byte = get_user((const uint8_t *)ptr);
+    if (!is_user_vaddr(ptr) || byte == -1)
+      exit_process(-1);
+    if (byte == 0)
+      break;
+    ptr++;
+  }
+}
+
 /* Checks if a user buffer is valid. */
 static void
 check_user_buffer(const void *buffer, unsigned size, bool writable UNUSED)
@@ -103,9 +123,21 @@ check_user_buffer(const void *buffer, unsigned size, bool writable UNUSED)
 static void *
 get_arg(struct intr_frame *f, int offset)
 {
-  void *ptr = (void *)(f->esp + offset);
-  check_user_ptr(ptr);
-  return *(void **)ptr;
+  uint8_t *ptr = (uint8_t *)(f->esp + offset);
+
+  /* Read 4 bytes using get_user to ensure safe access. */
+  uint32_t result = 0;
+  for (int i = 0; i < 4; i++)
+  {
+    if (!is_user_vaddr(ptr + i))
+      exit_process(-1);
+    int byte = get_user(ptr + i);
+    if (byte == -1)
+      exit_process(-1);
+    result |= ((uint32_t)byte << (i * 8));
+  }
+
+  return (void *)result;
 }
 
 static void
@@ -181,7 +213,7 @@ static void
 syscall_exec(struct intr_frame *f)
 {
   const char *cmd_line = (const char *)get_arg(f, 4);
-  check_user_ptr((const void *)cmd_line);
+  check_user_string(cmd_line);
 
   lock_acquire(&filesys_lock);
   f->eax = (uint32_t)process_execute(cmd_line);
@@ -203,7 +235,7 @@ syscall_create(struct intr_frame *f)
   const char *file = (const char *)get_arg(f, 4);
   unsigned initial_size = (unsigned)get_arg(f, 8);
 
-  check_user_ptr((const void *)file);
+  check_user_string(file);
 
   lock_acquire(&filesys_lock);
   f->eax = filesys_create(file, initial_size);
@@ -215,7 +247,7 @@ static void
 syscall_remove(struct intr_frame *f)
 {
   const char *file = (const char *)get_arg(f, 4);
-  check_user_ptr((const void *)file);
+  check_user_string(file);
 
   lock_acquire(&filesys_lock);
   f->eax = filesys_remove(file);
@@ -227,7 +259,7 @@ static void
 syscall_open(struct intr_frame *f)
 {
   const char *file_name = (const char *)get_arg(f, 4);
-  check_user_ptr((const void *)file_name);
+  check_user_string(file_name);
 
   lock_acquire(&filesys_lock);
   struct file *file = filesys_open(file_name);
