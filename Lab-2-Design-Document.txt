@@ -11,6 +11,10 @@
 >> text, lecture notes, and course staff. If you fail to do so while your
 >> soltion contains such material you will be penalized.
 
+Pintos official documentation and Stanford Pintos reference materials.
+https://web.stanford.edu/class/cs140/projects/pintos/pintos_6.html
+
+
 			     ALARM CLOCK
 			     ===========
 
@@ -20,26 +24,84 @@
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+In thread.h - struct child_status:
+  tid_t tid;                    /* Child thread ID */
+  int exit_status;              /* Exit status of child */
+  bool exited;                  /* True if child has exited */
+  bool waited_on;               /* True if parent already waited */
+  bool load_success;            /* True if child loaded successfully */
+  struct semaphore wait_sema;   /* Semaphore for wait synchronization */
+  struct list_elem elem;        /* List element for children list */
+
+In struct thread (thread.h):
+  struct thread *parent;        	/* Pointer to parent thread */
+  struct child_status *my_status; /* Pointer to own status in parent's list */
+  struct list children;         	/* List of child_status structures */
+  struct file *executable;      	/* Executable file (kept open for deny-write) */
+  struct list fd_table;         	/* File descriptor table */
+  int next_fd;                  	/* Next available file descriptor number */
+
+In syscall.h - struct file_descriptor:
+  int fd;                       /* File descriptor number */
+  struct file *file;            /* Pointer to open file */
+  struct list_elem elem;        /* List element for fd_table */
+
+Global variable in syscall.c:
+  struct lock filesys_lock;     /* Global lock for filesystem operations */
+
+
+
 ---- ALGORITHMS ----
 
 >> A2: Briefly describe what happens in a call to timer_sleep(),
 >> including the effects of the timer interrupt handler.
 
+Argument passing implementation in push_arguments() (process.c):
+1. Parse command line using strtok_r() and store arguments in argv[] array
+2. Push argument strings onto stack from right to left (reverse order)
+3. Word-align stack pointer to 4-byte boundary
+4. Push null pointer sentinel
+5. Push pointers to argument strings (argv[i]) from right to left
+6. Push argv (pointer to argv[0])
+7. Push argc (argument count)
+8. Push fake return address (0)
+
 >> A3: What steps are taken to minimize the amount of time spent in
 >> the timer interrupt handler?
+
+Stack overflow is avoided by limiting the number of arguments and checking
+that we don't exceed one page (4KB) during push operations.
+
+
 
 ---- SYNCHRONIZATION ----
 
 >> A4: How are race conditions avoided when multiple threads call
 >> timer_sleep() simultaneously?
 
+strtok_r() is reentrant and thread-safe because it uses a save_ptr parameter
+for each thread's state, while strtok() uses static storage that would cause
+race conditions when multiple threads parse simultaneously.
+
 >> A5: How are race conditions avoided when a timer interrupt occurs
 >> during a call to timer_sleep()?
+
+Unix approach advantages:
+1. Security: Shell runs in user space, so parsing errors don't crash kernel
+2. Flexibility: Different shells can implement different rules without kernel changes
+
+
 
 ---- RATIONALE ----
 
 >> A6: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
+
+Simple array-based approach for argument parsing is straightforward and efficient.
+Using strtok_r() ensures thread safety. The reverse-order push ensures correct
+stack layout per x86 calling convention.
+
+
 
 			 PRIORITY SCHEDULING
 			 ===================
@@ -50,18 +112,45 @@
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+child_status structure, thread members, file_descriptor
+structure, and filesys_lock.
+(Same as in A1 section above)
+
 >> B2: Explain the data structure used to track priority donation.
+
+File descriptors are unique per process. Each process has fd_table list.
+When file opened: allocate file_descriptor, assign fd from next_fd (starts at 2),
+store file pointer, add to fd_table. Different processes can use same fd number
+for different files. FDs 0 (stdin) and 1 (stdout) are reserved.
+
+
 
 ---- ALGORITHMS ----
 
 >> B3: How do you ensure that the highest priority thread waiting for
 >> a lock, semaphore, or condition variable wakes up first?
 
+User memory access via get_user(): Checks address < PHYS_BASE, uses inline
+assembly to read byte. If page fault, exception handler sets eax=-1. For
+buffers: validate each byte with get_user(), exit(-1) on failure.
+
 >> B4: Describe the sequence of events when a call to lock_acquire()
 >> causes a priority donation.
 
+wait() searches children list for child_status with matching tid, checks
+waited_on flag, waits on wait_sema if !exited, retrieves exit_status, frees
+child_status. process_exit() sets my_status->exit_status and exited=true,
+signals wait_sema, frees children, closes FDs. child_status persists after exit.
+
 >> B5: Describe the sequence of events when lock_release() is called
 >> on a lock that a higher-priority thread is waiting for.
+
+Strategy: Centralized validation (get_user, check_user_ptr, check_user_string,
+get_arg), early validation before allocation, exit_process(-1) handles all
+cleanup (locks, FDs, child_status). Example: syscall_write validates all
+arguments, any failure calls exit_process(-1) for automatic cleanup.
+
+
 
 ---- SYNCHRONIZATION ----
 
@@ -69,10 +158,35 @@
 >> how your implementation avoids it.  Can you use a lock to avoid
 >> this race?
 
+exec synchronization: process_execute() creates child_status with load_success=false,
+passes to child via process_info, waits on wait_sema. Child loads executable,
+sets load_success=true/false, signals wait_sema. Parent checks load_success,
+returns TID_ERROR or tid. Parent blocked until child reports load status.
+
+Parent-child synchronization cases:
+- P waits before C exits: P blocks on wait_sema, C signals on exit
+- P waits after C exits: P sees exited=true, retrieves status immediately
+- P terminates before C exits: P frees child_status, C's my_status dangling
+- P terminates after C exits: P's exit frees child_status
+child_status decouples state from thread lifetime, prevents use-after-free.
+
+
+
 ---- RATIONALE ----
 
 >> B7: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
+
+Page-fault method chosen: Simple get_user() with inline assembly, no extra
+page table lookups, MMU hardware validates automatically, handles all invalid
+access uniformly. Page fault handler checks fault_addr < PHYS_BASE, returns error.
+
+File descriptor design: Simple linked list, per-process isolation, easy iteration,
+no limit, clean cleanup. O(n) lookup acceptable for typical workloads.
+
+Identity mapping (tid==pid): Simpler, one-to-one correspondence, no separate
+pid allocation, sufficient for Lab 2 requirements.
+
 
 			   SURVEY QUESTIONS
 			   ================
